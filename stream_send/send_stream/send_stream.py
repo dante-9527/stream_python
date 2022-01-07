@@ -30,5 +30,8 @@ class StreamSender(object):
 
 if __name__ == '__main__':
     # todo 接收命令行给到的参数(ip, port)
+    """xtrabackup --defaults-file=/etc/my.cnf --host=192.168.100.93  --safe-slave-backup --slave-info --user=root 
+    --port=3306 --password=YiMu@20201128 --parallel=6 --backup --stream=xbstream | qpress -ioT4 src dest | 
+    python3 send_stream.py --ip=192.168.0.0 --port=9999"""
     client = StreamSender("127.0.0.1", 9999)
     client.run()
