@@ -26,8 +26,8 @@ def validate_port(ctx, param, value):
 
 
 @click.command()
-@click.option('--dbs_dir', help='The dbs dir')
-@click.option('--host', default='0.0.0.0', help='ip bind, default is 0.0.0.0')
+@click.option('--dbs-dir', help='The dbs dir',type=str)
+@click.option('--host', default='0.0.0.0', help='ip bind, default is 0.0.0.0', type=str)
 @click.option('--port', default=9999, help='port bind, default is 9999',
               type=click.IntRange(9000, 65535, clamp=True), callback=validate_port)
 def get_cmd_option(dbs_dir, host, port):
@@ -39,23 +39,42 @@ def get_cmd_option(dbs_dir, host, port):
 class RecvServer(socketserver.BaseRequestHandler):
     def handle(self):
         logger.info(f'{self.client_address} connect in')
+        recv_size = 0
         with sys.stdout.buffer as f1:
             while True:
                 try:
                     data = self.request.recv(1024)
                     if not data: break
+                    recv_size += len(data)
                     f1.write(data)
                 except ConnectionResetError as err:
                     logger.info(f'Conn error, err={err}')
                     raise ConnectionResetError(f'Conn error, err={err}')
                 except Exception as err:
+                    logger.info(f'Recv or write data error, err={err}')
                     # 清空备份片文件夹
-                    subprocess.check_call(f'rm -rf {DBS_DIR}/*', shell=True)
-                    logger.info(f'Read or write data error, err={err}')
-                    raise Exception(f'Read or write data error, err={err}')
+                    try:
+                        logger.info(f'Start to delete {DBS_DIR}')
+                        subprocess.check_call(f'rm -rf {DBS_DIR}/*', shell=True)
+                        logger.info(f'Delete {DBS_DIR} succeed')
+                    except Exception as e:
+                        logger.info(f'Delete {DBS_DIR} failed, err={e}')
+                    raise Exception(f'Recv or write data error, err={err}')
+        logger.info(f'Recv backup data total size is {recv_size}')
+        # 将收到的数据量传递回源端
+        # todo 使用stract模块将数字转化成4byte
+        self.request.send(recv_size)
+
+        # 接收源端对比数据量之后返回的retcode
+        retcode = self.request.recv(1)
+        if retcode == b'1':
+            logger.info(f'Recv backup from {self.client_address} succeed')
+        else:
+            logger.info(f'Recv backup from {self.client_address} failed')
+            raise Exception(f'Recv backup from {self.client_address} failed')
 
     def finish(self):
-        """完成数据流接收之后，关闭server"""
+        """关闭server"""
         self.server.shutdown()
 
 
