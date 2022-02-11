@@ -1,29 +1,23 @@
-import os
+import json
 import sys
 import click
 import socket
-from log_utils import dg_set_logger
-from airflow.configuration import AIRFLOW_HOME
-
-DG_WORK_PATH = AIRFLOW_HOME
-# 定义日志输出路径
-DG_LOG_PATH = os.path.abspath(os.path.join(DG_WORK_PATH, "dg_backend_logs"))
-
-DG_DBREC_LOG_FOLDER = '/dens/dbrec/logs/'
-
-logger = dg_set_logger(DG_LOG_PATH, "Gen_dags_template")
+import struct
 
 HOST = None
 PORT = None
+CHUNK_SIZE = 2048
 
 
 @click.command()
 @click.option('--host', help='host to connect', type=str)
 @click.option('--port', help='port to connect', type=int)
-def get_cmd_option(host, port):
+def run(host, port):
     global HOST, PORT
     HOST = host
     PORT = port
+    client = StreamSender(HOST, PORT)
+    client.run()
 
 
 class StreamSender(object):
@@ -33,40 +27,64 @@ class StreamSender(object):
         self.client.connect((host, port))
 
     def run(self):
+        # 判断是否可以传输数据
+        while 1:
+            ok = self.client.recv(1)
+            if ok == b'1':
+                break
         send_size = 0
-        with sys.stdin.buffer as f1:
-            try:
+        try:
+            with sys.stdin.buffer as f1:
                 while True:
-                    chunk = f1.read(1024)
+                    chunk = f1.read(CHUNK_SIZE)
                     if chunk == b'':
+                        # 传递结束传输flag
+                        flag = 0
+                        flag_header = struct.pack("i", flag)
+                        self.client.sendall(flag_header)
                         break
-                    self.client.send(chunk)
+                    # 制作数据头
+                    header = struct.pack("i", len(chunk))
+                    self.client.sendall(header)
+                    self.client.sendall(chunk)
                     send_size += len(chunk)
-            except Exception as err:
-                logger.info(f'Send backup failed, err={err}')
-        logger.info(f'Send total size is {send_size}')
-        self.check_stream_size(send_size)
-        self.client.close()
+            self.check_stream_size(send_size)
+        except Exception as err:
+            raise Exception(f'Send backup failed, err={err}')
+        finally:
+            self.client.close()
 
     def check_stream_size(self, send_size):
         """检查stream流是否完整发送"""
-        # 接收worker端传回来的数据量大小
-        recv_size = self.client.recv(4)
-        # todo 将byte转换成数字
+        # 获取数据头
+        has_read_size = 0
+        header_list = []
+        while has_read_size < 4:
+            chunk = self.client.recv(4 - has_read_size)
+            has_read_size += len(chunk)
+            header_list.append(chunk)
+        header = b"".join(header_list)
+        data_length = struct.unpack("i", header)[0]
+        # 获取数据
+        data_list = []
+        has_read_data_size = 0
+        while has_read_data_size < data_length:
+            size = 2048 if (data_length - has_read_data_size) > 2048 else (
+                    data_length - has_read_data_size)
+            data_chunk = self.client.recv(size)
+            has_read_data_size += len(data_chunk)
+            data_list.append(data_chunk)
+        recv_size = b"".join(data_list)
+        recv_size = json.loads(recv_size.decode('utf-8'))
         if recv_size == send_size:
-            logger.info(f'The amount of data received at the sysnode is equal to source side, is {recv_size}')
+            # logger.info(f'The amount of data received at the sysnode is equal to source side, is {recv_size}')
             self.client.send(b'1')
         else:
-            logger.info(f'The amount of data received at the sysnode is not equal to source side, is {recv_size}')
+            # logger.info(f'The amount of data received at the sysnode is not equal to source side, is {recv_size}')
             self.client.send(b'0')
             raise Exception(f'The amount of data received at the sysnode is not equal to source side, '
                             f'send size is {send_size},recv size is {recv_size}, ')
 
 
 if __name__ == '__main__':
-    # todo 接收命令行给到的参数(ip, port)
-    """xtrabackup --defaults-file=/etc/my.cnf --host=192.168.100.93  --safe-slave-backup --slave-info --user=root 
-    --port=3306 --password=YiMu@20201128 --parallel=6 --backup --stream=xbstream | qpress -ioT4 src dest | 
-    python3 send_stream.py --host=192.168.0.0 --port=9999"""
-    client = StreamSender(HOST, PORT)
-    client.run()
+    run()
