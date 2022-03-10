@@ -6,7 +6,7 @@ import struct
 
 HOST = None
 PORT = None
-CHUNK_SIZE = 2048
+CHUNK_SIZE = 4096
 
 
 @click.command()
